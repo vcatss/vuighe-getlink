@@ -1,17 +1,14 @@
+from time import sleep
 import requests
 import json
 import re
-
-def get_page_anime(page):
-    html = requests.get("https://vuighe.net/anime/trang-{page}")
-    print(html.text)
-
+from bs4 import BeautifulSoup
+import undetected_chromedriver as uc
 def get_post_ep(url_raw):
   """
   Read html to find value of data-id and data-episode-id
   """
   html = requests.get(url_raw)
-
   regex_pattern_step1 = r'(data-id=".*?" data-video-id=)|(data-episode-id=".*?")'
   regex_pattern_step2 = r'".*?"'
   match = re.findall(regex_pattern_step1, html.text)
@@ -46,48 +43,53 @@ def get_api_json(data_id, ep_id, url_raw):
   return result.json();
 
 def decode_m3u8_hash(hash):
-  """
-  The m3u8 link is encrypt, we need to decrypt and build m3u8 url.
-  The result m3u8 url can be play with any m3u8 player
-  """
-  # example input: -1156\x7fjj( 5-,($+-k&*(j-)6j'!w!qv!&}qwtrt'$|w!v'r&v'! |r&vq$!q!}ttuj5)$<),61k(v0}
   result = ""
   for i in range(len(hash)):
-    # get unicode value of string at position i
     o = ord(hash[i])
-
-    # and with 69 
     r = o ^ 69 
-
     decode_char = chr(r)
     result+= decode_char
-  
-  # result is https://mephimanh.com/hls/bd2d43dc842171ba92d3b7c3bde97c34ad4d8110/playlist.m3u8 
-  # but we need to extract the code bd2d43dc842171ba92d3b7c3bde97c34ad4d8110
-  # and build new url with domain ima21 
-  # "https://ima21.xyz/hls/bd2d43dc842171ba92d3b7c3bde97c34ad4d8110/playlist.m3u8"
-
-  # get the code from link 
-  m3u8_code = result.split("/")[4]
-
-  # build new link with the code
-  result_link = "https://ima21.xyz/hls/" + m3u8_code + "/playlist.m3u8"
-  return result_link
+  return result
 
 def full_decode_flow(vuighe_link):
-    # read html to find post id and ep id 
     data_id, ep_id = get_post_ep(vuighe_link)
-    # call api for m3u8 link
     resp_json = get_api_json(data_id, ep_id, vuighe_link)
-    #print(resp_json)
     try:
         
         try:
             fb = resp_json["sources"]["fb"][0]["src"]
             type = resp_json["sources"]["fb"][0]["type"]
             quality = resp_json["sources"]["fb"][0]["quality"]
-            print("Found fb")
-            print(fb,type,quality)
+            if "http" in fb:
+                print("Found fb")
+                print(fb,type,quality)
+            else:
+                print("Ops => found FB but not a good link")
+                #document.querySelectorAll('.player-video')[0].getAttribute("src")
+                #document.querySelectorAll('.setting-server-item')[0]
+                options = uc.ChromeOptions()
+                options.add_argument("--headless")
+                driver = uc.Chrome(use_subprocess=True,options=options)
+                driver.get(vuighe_link)
+                sleep(1)
+                driver.execute_script("document.querySelectorAll('.setting-server-item')[0].click()")
+                sleep(1)
+                htmls = driver.execute_script("return document.querySelectorAll('.player-video')[0]['src']")
+                while htmls == "":
+                    sleep(0.5)
+                    htmls = driver.execute_script("return document.querySelectorAll('.player-video')[0]['src']")
+                driver.quit()
+                print(htmls,type,quality)
+        except:
+            print("No fb")
+        try:
+            m3u8 = resp_json["sources"]["m3u8"]["1"]
+            m3u8_encrypt = resp_json["sources"]["m3u8"]["1"]
+            m3u8_link = decode_m3u8_hash(m3u8_encrypt)
+            if "http" in m3u8:
+                print("Found m3u8")
+            else:
+                print("Found but blob")
         except:
             print("No fb")
         try:
@@ -108,10 +110,51 @@ def full_decode_flow(vuighe_link):
             print("No yt")
     except:
         print("??")
-# decrypt the m3u8 link
-#   m3u8_encrypt = resp_json["sources"]["m3u8"]["1"]
-#   m3u8_link = decode_m3u8_hash(m3u8_encrypt)
-#   return m3u8_link
 
-#full_decode_flow("https://vuighe.net/kuroko-no-basket-movie/tap-3-movie-3-winter-cup-tobira-no-mukou")
+def get_page_anime(page):
+    html = requests.get(f"https://vuighe.net/anime/trang-{page}")
+    soup = BeautifulSoup(html.text, features="html.parser")
+    list = soup.findAll("div",{"class":"tray-item"})
+    for item in list:
+        try:
+            soup = BeautifulSoup(str(item), features="html.parser")
+            title = soup.find("div",{"class":"tray-item-title"})
+            url = "https://vuighe.net" + soup.find("a")["href"]
+            image = soup.find("img",{"class":"tray-item-thumbnail"})["data-src"]
+
+            #=> find first link
+
+            print("[Title]: " + title.text)
+            print("[Url]: " + url)
+            print("[Image]:" + image)
+
+            #=> find session
+            html2 = requests.get(url)
+            soup2 = BeautifulSoup(html2.text, features="html.parser")
+            seasons = soup2.findAll("div",{"class": "season-item"})
+            if len(seasons) != 0:
+                print(f"Found {len(seasons)}")
+                for season in seasons:
+                    soup3 = BeautifulSoup(str(season), features="html.parser")
+                    name = soup3.find("span", {"class": "season-item-name"}).text.replace(" -","").strip()
+                    start = soup3.find("div", {"class": "season-item"})["data-begin"]
+                    end = soup3.find("div", {"class": "season-item"})["data-end"]
+                    print(name,start,end)
+            else:
+                min = soup2.find("input", {"name": "current-episode"})["min"]
+                max = soup2.find("input", {"name": "current-episode"})["max"]
+                print(f"Found {min} - {max} episode")
+                for i in range(1,10):
+                    print(i)
+                    url2 = url + f"/tap-{i}"
+                    print(url2)
+                    full_decode_flow(url2)
+
+            print("============")
+        except:
+            continue
+
+
 get_page_anime(1)
+
+#full_decode_flow("https://vuighe.net/rwby-hyousetsu-teikoku/tap-1-bao-gom-tap-1-2-3")
